@@ -87,6 +87,8 @@ const StudentView = ({ baseUrl, courseId }) => {
   const [selectedQuiz, setSelectedQuiz] = useState('');
   const [isRiskEnabled, setIsRiskEnabled] = useState(true);
   const [watchedVideos, setWatchedVideos] = useState({});
+  const [voteCounts, setVoteCounts] = useState({});       // { questionId: { upvotes: N, downvotes: N } }
+  const [studentVotes, setStudentVotes] = useState({});   // { questionId: "upvote" | "downvote" }
 
   const imgs = { youtube };
 
@@ -330,6 +332,7 @@ const StudentView = ({ baseUrl, courseId }) => {
             viewCount: 'N/A',
             duration: 'N/A',
             quizName: item.quiz_name,
+            questionId: item.questionid,
           });
         }
       });
@@ -400,6 +403,92 @@ const StudentView = ({ baseUrl, courseId }) => {
       const updated = { ...prev, [videoId]: !prev[videoId] };
       return updated;
     });
+  };
+
+  const fetchVotes = async (courseId, videos) => {
+    if (!videos || videos.length === 0) return;
+    const questionIds = videos.map(v => v.questionId).filter(Boolean);
+    if (questionIds.length === 0) return;
+
+    try {
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          type: 'API_REQUEST',
+          url: `${BACKEND_URL}/get-video-votes`,
+          method: 'POST',
+          body: {
+            course_id: courseId,
+            question_ids: questionIds,
+            student_id: String(userId)
+          }
+        }, (response) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else if (!response || !response.success) reject(new Error(response?.error || 'Unknown error'));
+          else resolve(response.data);
+        });
+      });
+
+      if (response.counts) setVoteCounts(response.counts);
+      if (response.student_votes) setStudentVotes(response.student_votes);
+    } catch (error) {
+      console.error('Error fetching vote counts:', error);
+    }
+  };
+
+  const handleVote = async (video, voteType) => {
+    const courseId = fetchCurrentCourseId();
+    if (!userId || !courseId) return;
+
+    const questionId = String(video.questionId);
+    const currentVote = studentVotes[questionId];
+
+    // Optimistically update UI
+    setStudentVotes(prev => ({
+      ...prev,
+      [questionId]: currentVote === voteType ? null : voteType
+    }));
+
+    setVoteCounts(prev => {
+      const current = prev[questionId] || { upvotes: 0, downvotes: 0 };
+      const updated = { ...current };
+
+      // Remove old vote if toggling off or switching
+      if (currentVote === 'upvote') updated.upvotes = Math.max(0, updated.upvotes - 1);
+      if (currentVote === 'downvote') updated.downvotes = Math.max(0, updated.downvotes - 1);
+
+      // Add new vote only if not toggling off
+      if (currentVote !== voteType) {
+        if (voteType === 'upvote') updated.upvotes += 1;
+        if (voteType === 'downvote') updated.downvotes += 1;
+      }
+
+      return { ...prev, [questionId]: updated };
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          type: 'API_REQUEST',
+          url: `${BACKEND_URL}/vote-video`,
+          method: 'POST',
+          body: {
+            student_id: String(userId),
+            course_id: courseId,
+            question_id: questionId,
+            video_link: video.url,
+            vote_type: currentVote === voteType ? 'remove' : voteType
+          }
+        }, (response) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else if (!response || !response.success) reject(new Error(response?.error || 'Unknown error'));
+          else resolve(response.data);
+        });
+      });
+    } catch (error) {
+      console.error('Error submitting vote:', error);
+      // Revert optimistic update on failure
+      await fetchVotes(courseId, recommendedVideos);
+    }
   };
 
   // Effect 1: Fetch userId on mount
@@ -558,7 +647,9 @@ const StudentView = ({ baseUrl, courseId }) => {
           const recommendations = await fetchVideoRecommendations(userId, courseId);
           console.log('Debug - Video recommendations response:', recommendations);
           if (recommendations) {
-            setRecommendedVideos(formatVideoRecommendations(recommendations));
+            const formatted = formatVideoRecommendations(recommendations);
+            setRecommendedVideos(formatted);
+            await fetchVotes(courseId, formatted);
           }
         }
       } else {
@@ -876,6 +967,46 @@ const StudentView = ({ baseUrl, courseId }) => {
                       <p className="video-reason">{video.reason}</p>
                     </div>
                   </a>
+                  {/* Vote buttons */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', marginLeft: '10px' }}>
+                    <button
+                      onClick={(e) => { e.preventDefault(); handleVote(video, 'upvote'); }}
+                      title="Upvote"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: '18px',
+                        lineHeight: 1,
+                        color: studentVotes[String(video.questionId)] === 'upvote' ? '#2563eb' : '#9ca3af',
+                        transition: 'color 0.15s ease, transform 0.15s ease',
+                        transform: studentVotes[String(video.questionId)] === 'upvote' ? 'scale(1.2)' : 'scale(1)',
+                        padding: '2px'
+                      }}
+                    >
+                      ▲
+                    </button>
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#374151', minWidth: '20px', textAlign: 'center' }}>
+                      {(voteCounts[String(video.questionId)]?.upvotes || 0) - (voteCounts[String(video.questionId)]?.downvotes || 0)}
+                    </span>
+                    <button
+                      onClick={(e) => { e.preventDefault(); handleVote(video, 'downvote'); }}
+                      title="Downvote"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: '18px',
+                        lineHeight: 1,
+                        color: studentVotes[String(video.questionId)] === 'downvote' ? '#dc2626' : '#9ca3af',
+                        transition: 'color 0.15s ease, transform 0.15s ease',
+                        transform: studentVotes[String(video.questionId)] === 'downvote' ? 'scale(1.2)' : 'scale(1)',
+                        padding: '2px'
+                      }}
+                    >
+                      ▼
+                    </button>
+                  </div>
                   {/* Watched checkbox */}
                   <div style={{ display: 'flex', alignItems: 'center', marginLeft: '16px' }}>
                     <input
