@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './Popup.css';
+import './Studentview.css';
 import youtube from '../Popup/imgs/youtube.png';
 
 // Add backend URL constant
@@ -29,6 +30,10 @@ const InstructorView = ({ baseUrl, courseId }) => {
   const [updateSuccess, setUpdateSuccess] = useState(false);
   const [isDeepSyncing, setIsDeepSyncing] = useState(false);
   const [deepSyncStatus, setDeepSyncStatus] = useState('');
+  const [showInstructorCalc , setInstructorCalc] = useState(false);
+  const [showStudentCalc , setStudentCalc] = useState(false);
+
+
 
   const imgs = { youtube: '/path/to/youtube/icon.png' };
 
@@ -150,7 +155,7 @@ const InstructorView = ({ baseUrl, courseId }) => {
     }
   };
 
-  const fetchEnrollments = async (courseId) => {
+  const fetchStudentsWithGrades = async (courseId) => {
     const baseUrl = getCanvasBaseUrl();
     const storedToken = localStorage.getItem('apiToken');
 
@@ -169,64 +174,32 @@ const InstructorView = ({ baseUrl, courseId }) => {
     };
 
     try {
-      const response = await fetch(
-        `${baseUrl}/api/v1/courses/${courseId}/enrollments`,
-        requestOptions
-      );
-      const enrollmentData = await response.json();
-      return enrollmentData.filter(
-        (enrollment) => enrollment.type === 'StudentEnrollment'
-      );
+      //getting an array with all students enrolled and current grade
+      let allEnrollments = [];
+      let nextUrl = `${baseUrl}/api/v1/courses/${courseId}/enrollments?include[]=grades&type[]=StudentEnrollment&per_page=100`;
+      
+      //loop through all pages
+      while(nextUrl) {
+        const response = await fetch(nextUrl, requestOptions);
+        const data = await response.json();
+        allEnrollments = [...allEnrollments, ...data];
+
+        //checking for next page
+        const linkHeader = response.headers.get('Link');
+        if (linkHeader) {
+          const nextMatch = linkHeader.match(/<([^>]+)>; rel="next"/);
+          nextUrl = nextMatch ? nextMatch[1] : null;
+        }else{
+          nextUrl = null;
+        }
+      }
+      return allEnrollments.map((enrollment) => ({
+        id: enrollment.user_id,
+        name: enrollment.user.name,
+        currentScore: enrollment.grades?.current_score ?? 0,
+      }));
     } catch (error) {
-      console.error('Error fetching enrollment data:', error);
-      return [];
-    }
-  };
-
-  const fetchAssignments = async (courseId, userId) => {
-    const baseUrl = getCanvasBaseUrl();
-    const storedToken = localStorage.getItem('apiToken');
-
-    if (!baseUrl || !storedToken) {
-      console.error('Missing base URL or API token');
-      return [];
-    }
-
-    const myHeaders = new Headers();
-    myHeaders.append('Authorization', `Bearer ${storedToken}`);
-
-    const requestOptions = {
-      method: 'GET',
-      headers: myHeaders,
-      redirect: 'follow',
-    };
-
-    try {
-      const assignmentsResponse = await fetch(
-        `${baseUrl}/api/v1/courses/${courseId}/assignments`,
-        requestOptions
-      );
-      const assignmentsResult = await assignmentsResponse.json();
-
-      const studentAssignments = await Promise.all(
-        assignmentsResult.map(async (assignment) => {
-          const submissionResponse = await fetch(
-            `${baseUrl}/api/v1/courses/${courseId}/assignments/${assignment.id}/submissions/${userId}`,
-            requestOptions
-          );
-          const submissionResult = await submissionResponse.json();
-
-          return {
-            name: assignment.name,
-            score: submissionResult.score || 'N/A',
-            pointsPossible: assignment.points_possible,
-          };
-        })
-      );
-
-      return studentAssignments;
-    } catch (error) {
-      console.error('Error fetching assignments:', error);
+      console.error('Error fetching students with grades', error);
       return [];
     }
   };
@@ -389,24 +362,9 @@ const InstructorView = ({ baseUrl, courseId }) => {
         }
         // ------------------------------------------------------
 
-        const enrollments = await fetchEnrollments(courseId);
-        const studentData = await Promise.all(
-          enrollments.map(async (enrollment) => {
-            const assignments = await fetchAssignments(
-              courseId,
-              enrollment.user_id
-            );
-            return {
-              id: enrollment.user_id,
-              name: enrollment.user.name,
-              scores: assignments.map((a) =>
-                a.score !== 'N/A' ? parseFloat(a.score) : 0
-              ),
-              assignments: assignments,
-            };
-          })
-        );
+        const studentData = await fetchStudentsWithGrades(courseId);
         setStudents(studentData);
+
         fetchCourseVideos(courseId);
 
         // Fetch quizzes for the course
@@ -458,34 +416,23 @@ const InstructorView = ({ baseUrl, courseId }) => {
   };
 
   const getClassPerformanceOverview = () => {
-    let highRiskCount = 0;
-    let mediumRiskCount = 0;
-    let lowRiskCount = 0;
-    let totalScore = 0;
+    const classAverage = calculateClassAverage(students);
+    let aboveCount = 0;
+    let avgCount = 0;
+    let belowCount = 0;
 
     students.forEach((student) => {
-      const averageScore = calculateAverageScore(student.scores);
-      const riskFactor = calculateRiskFactor(averageScore);
-
-      if (riskFactor === 1) {
-        highRiskCount++;
-      } else if (riskFactor === 0.5) {
-        mediumRiskCount++;
-      } else {
-        lowRiskCount++;
-      }
-
-      totalScore += averageScore;
+      const label = setPerformanceLabel(student.currentScore,classAverage);
+      if(label === 'Above Average') aboveCount++; 
+      else if(label === 'Around Average') avgCount++;
+      else if(label === 'Below Average') belowCount++;
     });
 
-    const classSize = students.length;
-    const averageScore = totalScore / classSize;
-
     return {
-      highRiskCount,
-      mediumRiskCount,
-      lowRiskCount,
-      averageScore,
+      aboveCount,
+      avgCount,
+      belowCount,
+      classAverage,
     };
   };
 
@@ -847,6 +794,28 @@ const InstructorView = ({ baseUrl, courseId }) => {
     }
   };
 
+  const calculateClassAverage = (students) => {
+    if(students.length === 0) return 0;
+    const total = students.reduce((sum, student) => sum + student.currentScore,0);
+    return total / students.length;
+  };
+
+  const setPerformanceLabel = (studentScore, classAverage) => {
+    if(studentScore > classAverage + 10) return 'Above Average';
+    if(studentScore < classAverage - 10) return 'Below Average';
+    return 'Around Average';
+  };
+
+  const colorPerformanceLabel = (label) => {
+    //setting the colors of the label
+    switch(label){
+      case'Above Average': return styles.lowRiskTag;
+      case'Below Average': return styles.highRiskTag;
+      case 'Around Average': return styles.mediumRiskTag;
+      default: return {};
+    }
+  };
+
   const styles = {
     body: {
       backgroundColor: '#f7fafc',
@@ -1094,40 +1063,140 @@ const InstructorView = ({ baseUrl, courseId }) => {
           {showRiskLevels && (
             <div style={styles.grid}>
               <div style={styles.item}>
-                <h3 style={styles.itemTitle}>High Risk</h3>
+                <h3 style={styles.itemTitle}>Below Average</h3>
                 <p style={styles.highRisk}>
-                  {getClassPerformanceOverview().highRiskCount}
+                  {getClassPerformanceOverview().belowCount}
                 </p>
               </div>
               <div style={styles.item}>
-                <h3 style={styles.itemTitle}>Medium Risk</h3>
+                <h3 style={styles.itemTitle}>Around Average</h3>
                 <p style={styles.mediumRisk}>
-                  {getClassPerformanceOverview().mediumRiskCount}
+                  {getClassPerformanceOverview().avgCount}
                 </p>
               </div>
               <div style={styles.item}>
-                <h3 style={styles.itemTitle}>Low Risk</h3>
+                <h3 style={styles.itemTitle}>Above Average</h3>
                 <p style={styles.lowRisk}>
-                  {getClassPerformanceOverview().lowRiskCount}
+                  {getClassPerformanceOverview().aboveCount}
                 </p>
               </div>
             </div>
           )}
 
           <p style={styles.averageScore}>
-            Average Score:{' '}
-            {getClassPerformanceOverview().averageScore.toFixed(2)}%
+            Class Average: {calculateClassAverage(students).toFixed(2)}%
           </p>
         </div>
       </div>
+      {showRiskLevels && (
+        <div className="risk-calculations fade-in" style={{ 
+          backgroundColor: '#ffffff',
+          maxWidth: '40rem',
+          margin: '1rem auto',
+        }}>
+        <div style={{ display: 'flex', alignItems: 'center', }}>
+          <h2 className="risk-calculations-title" style={{textAlign: 'left', fontWeight: 'bold'}}>Risk Analysis Calculations On Instructor View</h2>
+          <button onClick ={() => setInstructorCalc(!showInstructorCalc)}
+          className={showInstructorCalc ? 'arrow-open' : 'arrow-closed'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '20px',
+              height: '20px',
+              borderRadius: '.25rem',
+              cursor: 'pointer',
+              fontSize: '.80rem',
+              color: '#848e9c',
+              padding: '0',  
+              marginLeft: '6px',
+              marginBottom: '10px',     
+             }}
+          >
+            ▼
+          </button>
+        </div>
+        {showInstructorCalc && (
+          <div className="risk-calc-result">
+            Risk Levels → <span className="risk-high">Below Average</span> / <span className="risk-medium">Around Average</span> / <span className="risk-low">Above Average</span>
+          </div>
+        )}
+        {showInstructorCalc &&(
+            <div className="risk-calc-blurb"  style={{ 
+            paddingBottom: "20px",
+            }}>
+                An Instructor Risk Analysis is based on how the students are doing relative to other students. 
+                If a student is within ±10 points of the Class Average, they will be classified as "Around Average". 
+                This system is designed to help instructors quickly identify which students may need additional 
+                support or intervention compared to their peers.
+            </div>
+          )}
+          
+          <div style = {{ display: 'flex', alignItems: 'center', }}>
+            <h2 className="risk-calculations-title" style={{textAlign: 'left', fontWeight: 'bold'}}>Risk Analysis Calculations On Student View</h2>
+            <button onClick ={() => setStudentCalc(!showStudentCalc)}
+              className={showStudentCalc ? 'arrow-open' : 'arrow-closed'}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '20px',
+                height: '20px',
+                borderRadius: '.25rem',
+                cursor: 'pointer',
+                fontSize: '.80rem',
+                color: '#848e9c',
+                padding: '0',  
+                marginLeft: '6px',
+                marginBottom: '10px',     
+               }}
+            >
+              ▼
+            </button>
+          </div>
 
+          {showStudentCalc &&(
+          <div className="risk-calc-result">
+            Risk Levels → <span className="risk-high">High Risk</span> / <span className="risk-medium">Medium Risk</span> / <span className="risk-low">Low Risk</span>
+          </div>
+          )}
+
+          {showStudentCalc && (
+          <div className="risk-calc-blurb">
+            A Student's risk index is calculated using their average score on their past 5 assignments (weighted 30%), 
+            their current class grade (weighted 50%), and the grade trend from their past five assignments, up or down (weighted 20%). 
+            These are added together, with their respective weights into a score out of 100: 70 or above means Low Risk, 
+            60 to 69 means Medium Risk, and below 60 means High Risk.
+          </div>
+
+          )}
+          
+        </div>
+      )}
+      {showRiskLevels && (
+      <div className = "risk-calc-disclaimer"  style={{ 
+          maxWidth: '40rem',
+          margin: '1rem auto',
+        }}>
+        <span style={{ color: '#dc2626', fontWeight: '700' }}>DISCLAIMER: </span>
+        <span style={{ color: '#000000' }}>Risk levels displayed in the instructor dashboard uses different calcualtions from the student dashboard. They differ because the instructor dashboard is designed to identify students who may need intervention relative to their peers, while the student view is designed to encourage self-awareness and personal improvement by focusing on the individual student's own grade trend, recent performance, and academic momentum.</span>
+      </div>
+      )}
       <div
         style={{ ...styles.container, maxHeight: '400px', overflowY: 'auto' }}
       >
         <div>
           <h2 style={styles.title}>Student Risk Dashboard</h2>
+          {students.length > 0 &&(
+               <p style={{ fontSize: '0.875rem', color: '#718096', marginBottom: '1rem' }}>
+                Class Average: {calculateClassAverage(students).toFixed(2)}%
+             </p>
+          )}
           <ul style={styles.studentList}>
-            {students.map((student) => (
+            {students.map((student) => {
+              const classAverage = calculateClassAverage(students);
+              const label = setPerformanceLabel(student.currentScore, classAverage);
+              return (
               <li
                 key={student.id}
                 style={{
@@ -1138,8 +1207,7 @@ const InstructorView = ({ baseUrl, courseId }) => {
                 <div>
                   <h3 style={styles.studentName}>{student.name}</h3>
                   <p style={styles.studentDetail}>
-                    Average Score:{' '}
-                    {calculateAverageScore(student.scores).toFixed(2)}%
+                    Current Grade: {student.currentScore.toFixed(2)}%
                   </p>
                 </div>
                 
@@ -1149,31 +1217,16 @@ const InstructorView = ({ baseUrl, courseId }) => {
                     <span
                       style={{
                         ...styles.riskTag,
-                        ...(calculateRiskFactor(
-                          calculateAverageScore(student.scores)
-                        ) === 1
-                          ? styles.highRiskTag
-                          : calculateRiskFactor(
-                            calculateAverageScore(student.scores)
-                          ) === 0.5
-                            ? styles.mediumRiskTag
-                            : styles.lowRiskTag),
-                      }}
+                        ...(colorPerformanceLabel(label))
+                        }}
                     >
-                      {calculateRiskFactor(
-                        calculateAverageScore(student.scores)
-                      ) === 1
-                        ? 'High Risk'
-                        : calculateRiskFactor(
-                          calculateAverageScore(student.scores)
-                        ) === 0.5
-                          ? 'Medium Risk'
-                          : 'Low Risk'}
+                      {label}
                     </span>
                   )}
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
       </div>

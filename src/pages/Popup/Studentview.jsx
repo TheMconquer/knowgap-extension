@@ -5,9 +5,22 @@ import youtube from './imgs/youtube.png';
 const BACKEND_URL = process.env.BACKEND_URL;
 
 const calculateSlope = (assignments) => {
+
+  console.log('DEBUG - ALL assignments before filter:', 
+    assignments.map(a => ({ 
+      name: a.name, 
+      score: a.score, 
+      submittedAt: a.submittedAt,
+      pointsPossible: a.pointsPossible
+    }))
+  );
+  // Filters out extra credit assignemnts and those without valid scores, then takes the last 5 assignments
   const lastFiveAssignments = assignments
     .filter(
-      (assignment) => assignment.score !== 'N/A' && assignment.score !== 'Error'
+      (assignment) => assignment.score !== 'N/A' && assignment.score !== 'Error'&& assignment.pointsPossible > 0 && !(/extra\s*credit/i.test(assignment.name))
+    )
+    .sort(
+      (a,b) => {if(!a.submittedAt) return 1;if(!b.submittedAt) return -1; return new Date(a.submittedAt) - new Date(b.submittedAt)}
     )
     .slice(-5);
 
@@ -34,15 +47,18 @@ const calculateSlope = (assignments) => {
   return [slope, ...y];
 };
 
-const normalizeGts = (slope, minSlope = -10, maxSlope = 10) => {
-  return ((slope - minSlope) / (maxSlope - minSlope)) * 100;
+const normalizeGts = (slope, minSlope = -30, maxSlope = 30) => {
+  const clampedSlope = Math.min(Math.max(slope,minSlope),maxSlope);
+  //converts slope to a 0-100 scale based on expected min and max slope values
+  const normalized = ((clampedSlope - minSlope) / (maxSlope - minSlope)) * 100;
+  return normalized;
 };
 
 const calculateRiskIndex = (rps, cgs, gts, currentScore) => {
   const weights = {
     rps: 0.3,
-    cgs: 0.55,
-    gts: 0.15,
+    cgs: 0.50,
+    gts: 0.20,
   };
 
   const riskIndex = weights.rps * rps + weights.cgs * cgs + weights.gts * gts;
@@ -50,13 +66,17 @@ const calculateRiskIndex = (rps, cgs, gts, currentScore) => {
   let riskLevel;
   
   // Special case: If grade is below 69 but showing strong improvement
-  if (currentScore < 69 && gts > 75) {
+  if (currentScore < 60 && gts > 75) {
+    riskLevel = 'Medium Risk';
+  }
+  // Special case: If grade is above 70 but showing strong decline
+  else if (currentScore >= 70 && gts < 25) {
     riskLevel = 'Medium Risk';
   }
   // Normal risk index calculation
-  else if (riskIndex >= 75) {
+  else if (riskIndex >= 70) {
     riskLevel = 'Low Risk';
-  } else if (riskIndex >= 69 && riskIndex < 75) {
+  } else if (riskIndex >= 60 && riskIndex < 70) {
     riskLevel = 'Medium Risk';
   } else {
     riskLevel = 'High Risk';
@@ -162,15 +182,27 @@ const StudentView = ({ baseUrl, courseId }) => {
       redirect: 'follow',
     };
 
+    // makes sure all assignments done are considered
     try {
-      const assignmentsResponse = await fetch(
-        `https://${canvasDomain}/api/v1/courses/${courseId}/assignments`,
-        requestOptions
-      );
-      const assignmentsResult = await assignmentsResponse.json();
+      let allAssignments = [];
+      let nextUrl = `https://${canvasDomain}/api/v1/courses/${courseId}/assignments?per_page=100`;
+      while (nextUrl) {
+        const assignmentsResponse = await fetch(nextUrl, requestOptions);
+        const assignmentsResult = await assignmentsResponse.json();
+        allAssignments = [...allAssignments, ...assignmentsResult];
+
+        const linkHeader = assignmentsResponse.headers.get('Link');
+        if (linkHeader) { 
+          const nextMatch = linkHeader.match(/<([^>]+)>; rel="next"/);
+          nextUrl = nextMatch ? nextMatch[1] : null;
+        } else { 
+          nextUrl = null;
+        }
+      }
+
 
       const formattedAssignments = await Promise.all(
-        assignmentsResult.map(async (assignment) => {
+        allAssignments.map(async (assignment) => {
           try {
             const submissionResponse = await fetch(
               `https://${canvasDomain}/api/v1/courses/${courseId}/assignments/${assignment.id}/submissions/self`,
@@ -183,10 +215,15 @@ const StudentView = ({ baseUrl, courseId }) => {
             }
             const submissionResult = await submissionResponse.json();
 
+            const isGraded = submissionResult.workflow_state === 'graded';
+            const hasScore = submissionResult.score !== null && submissionResult.score !== undefined;
+
+
             return {
               name: assignment.name,
-              score: submissionResult.score || 'N/A',
+              score: (isGraded || hasScore) ? submissionResult.score : 'N/A',
               pointsPossible: assignment.points_possible,
+              submittedAt: submissionResult.submitted_at,
             };
           } catch (error) {
             console.error(
@@ -686,7 +723,7 @@ const StudentView = ({ baseUrl, courseId }) => {
 
     const currentGrade = parseFloat(classGrade);
     if (isNaN(currentGrade)) {
-      return { riskLevel: 'Medium Risk' };
+      return { riskLevel: 'Medium Risk',  rps: 0, cgs: 0, gts: 0, slope: 0, riskIndex: 0};
     }
 
     // Calculate rps as the average of all the assignment scores
@@ -696,9 +733,10 @@ const StudentView = ({ baseUrl, courseId }) => {
     
     const cgs = currentGrade;
     console.log('cgs:', cgs);
-    console.log('rps (average of last assignments):', rps);
+    console.log('rps (average of last assignments):', rps); 
+    const { riskLevel, riskIndex } = calculateRiskIndex(rps, cgs, gts, currentGrade);
 
-    return calculateRiskIndex(rps, cgs, gts, currentGrade);
+    return { riskLevel, rps, cgs, gts, slope, riskIndex };
   };
 
   const getRiskLevelClass = (riskLevel) => {
@@ -751,6 +789,7 @@ const StudentView = ({ baseUrl, courseId }) => {
   };
 
   const refreshSupportVideo = async () => {
+    if (!isRiskEnabled) return;
     const { riskLevel } = calculateRisk();
     const supportVideoData = await fetchSupportVideos(
       normalizeRiskLevel(riskLevel)
@@ -758,7 +797,7 @@ const StudentView = ({ baseUrl, courseId }) => {
     setSupportVideo(supportVideoData);
   };
 
-  const { riskLevel } = calculateRisk();
+  const { riskLevel, rps, cgs, gts, slope, riskIndex } = isRiskEnabled ? calculateRisk() : { riskLevel: 'Low Risk', rps: 0, cgs: 0, gts: 0, slope: 0, riskIndex: 0 }; 
 
   const validateToken = async (token) => {
     const baseUrl = getCanvasDomain();
@@ -866,10 +905,50 @@ const StudentView = ({ baseUrl, courseId }) => {
               </div>
             </div>
             </div>
+            {isRiskEnabled && (
+              <div className="risk-calculations fade-in">
+                <h2 className="risk-calculations-title">Risk Analysis Calculations</h2>
+
+              <div className="risk-calc-row">
+                <span className="risk-calc-label">Recent Grade Score Average (RPS):</span>
+                <span className="risk-calc-value">{rps.toFixed(2)}%</span>
+              </div>
+
+              <div className="risk-calc-row">
+                <span className="risk-calc-label">Current Grade Score(CGS):</span>
+                <span className="risk-calc-value">{cgs.toFixed(2)}%</span>
+              </div>
+
+              <div className="risk-calc-row">
+                <span className="risk-calc-label">Grade Trend Slope(GTS):</span>
+                <span className="risk-calc-value">{slope.toFixed(2)}</span>
+              </div>
+
+              <div className="risk-calc-formula">
+                (0.30 × <span>{rps.toFixed(2)}</span>) + (0.50 × <span>{cgs.toFixed(2)}</span>) + (0.20 × <span>{gts.toFixed(2)}</span>) = <span>{riskIndex.toFixed(2)}</span>
+              </div>
+
+              <div className="risk-calc-result">
+                Risk Index: {riskIndex.toFixed(2)} → <span className={getRiskLevelClass(riskLevel)}>{riskLevel}</span>
+              </div>
+
+              <div className="risk-calc-description">
+                Your risk index is calculated using three factors: your average score on your last five assignments (30%), 
+                your current class grade (55%), and whether your grades are trending up or down (15%). 
+                These are combined into a score out of 100: 70 or above means Low Risk, 
+                60 to 69 means Medium Risk, and below 60 means High Risk. Addionally, if your current grade is below 60% but you're showing strong improvement, we classify you as Medium Risk to reflect that positive trend, and if your current grade is above a 70% but your grade trend is in a strong decline we will also classify you as a Medium Risk.
+              </div>
+            </div>
+          )}
+          {isRiskEnabled && (
+          <div className = "risk-calc-disclaimer" style = {{ marginTop: '0.5rem' }}>
+              <span style={{ color: '#dc2626', fontWeight: '700' }}>DISCLAIMER: </span>
+              <span style={{ color: '#000000' }}>This risk index is not an official academic assessment. It is a <strong>heuristic</strong> calculation - meaning it is a rule-based estimate, not a prediction. It is intended as a general indicator to help you monitor your progress and seek support if needed.</span>
+          </div>
+          )}
           </div>
         )}
       </div>
-
       <div className="tab-container">
         <button
           className={`tab-button ${activeTab === 'assignments' ? 'active' : ''
