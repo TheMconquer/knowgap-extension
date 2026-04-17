@@ -13,6 +13,7 @@ const Popup = () => {
   const [syncError, setSyncError] = useState(null);
   const [tokenStatus, setTokenStatus] = useState('');
   const [canvasInfo, setCanvasInfo] = useState({ baseUrl: null, courseId: null });
+  const [isLoading, setIsLoading] = useState(false);
 
   const getCanvasInfo = async () => {
     let url = window.location.href;
@@ -153,6 +154,8 @@ const Popup = () => {
 
   useEffect(() => {
     const fetchUserRole = async () => {
+      setIsLoading(true);
+      try {
       const { baseUrl, courseId } = await getCanvasInfo();
       setCanvasInfo({ baseUrl, courseId });
 
@@ -206,6 +209,9 @@ const Popup = () => {
         await updateCourseContext(courseId, role);
       } catch (error) {
         console.error('Error fetching user role:', error);
+      }
+      } finally {
+        setIsLoading(false);
       }
     };
 
@@ -263,7 +269,12 @@ const Popup = () => {
   return (
     <div className="container" style={{ display: 'flex', flexDirection: 'column', margin: '0 auto', ...( !localStorage.getItem('apiToken') && !userRole ? { maxWidth: '600px', maxHeight: '200px', minHeight: '120px', justifyContent: 'center' } : {} ) }}>
       <div style={{ flex: 1 }}>
-        {!localStorage.getItem('apiToken') && !userRole ? (
+        {isLoading ? (
+          <div className="loading-screen">
+            <div className="loading-spinner" />
+            <p className="loading-text">Loading GenAiPrime...</p>
+          </div>
+        ) : !localStorage.getItem('apiToken') && !userRole ? (
           <>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '120px', width: '100%' }}>
               <input

@@ -109,6 +109,7 @@ const StudentView = ({ baseUrl, courseId }) => {
   const [watchedVideos, setWatchedVideos] = useState({});
   const [voteCounts, setVoteCounts] = useState({});       // { questionId: { upvotes: N, downvotes: N } }
   const [studentVotes, setStudentVotes] = useState({});   // { questionId: "upvote" | "downvote" }
+  const [isLoadingData, setIsLoadingData] = useState(false);
 
   const imgs = { youtube };
 
@@ -579,6 +580,8 @@ const StudentView = ({ baseUrl, courseId }) => {
   // In the useEffect that runs when userId changes, fetch and set the grade
   useEffect(() => {
     const updateCourseAndData = async () => {
+      setIsLoadingData(true);
+      try {
       const courseId = fetchCurrentCourseId();
       const storedToken = localStorage.getItem('apiToken');
       const baseUrl = getCanvasDomain();
@@ -696,6 +699,9 @@ const StudentView = ({ baseUrl, courseId }) => {
           hasBaseUrl: !!baseUrl,
           hasUserId: !!userId
         });
+      }
+      } finally {
+        setIsLoadingData(false);
       }
     };
 
@@ -862,6 +868,18 @@ const StudentView = ({ baseUrl, courseId }) => {
       <div className="container">
         {!hasToken && !localStorage.getItem('apiToken') ? (
           null
+        ) : isLoadingData ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '180px', width: '100%' }}>
+            <div style={{
+              width: '32px', height: '32px',
+              border: '3px solid #e2e8f0',
+              borderTopColor: '#2563eb',
+              borderRadius: '50%',
+              animation: 'spin 0.75s linear infinite',
+              marginBottom: '12px'
+            }} />
+            <p style={{ fontSize: '14px', color: '#6b7280', fontWeight: 500 }}>Loading your course data...</p>
+          </div>
         ) : (
           <div>
             {isSyncingCourse && (
