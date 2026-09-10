@@ -533,6 +533,12 @@ const InstructorView = ({ baseUrl, courseId }) => {
     return match && match[2].length === 11 ? match[2] : null;
   };
 
+  // Helper to strip HTML tags from question text
+  const stripHtml = (html) => {
+      if (!html) return '';
+      return html.replace(/<[^>]*>?/gm, '').trim();
+    };
+
   const handleAddVideo = async () => {
     if (!newVideo.title || !newVideo.url || !newVideo.questionId || !selectedQuiz) {
       console.log('Missing required fields');
@@ -550,7 +556,7 @@ const InstructorView = ({ baseUrl, courseId }) => {
     }
 
     try {
-      const response = await fetch(`${BACKEND_URL}add-video`, {
+      const response = await fetch(`${BACKEND_URL}/add-video`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -570,13 +576,16 @@ const InstructorView = ({ baseUrl, courseId }) => {
       console.log('API Response:', data);
 
       if (response.ok) {
+        // Clean HTML tags from question text
+        const cleanQuestionText = stripHtml(selectedQuestion.question_text);
+        
         const newVideoData = {
           question_id: newVideo.questionId,
           quiz_id: selectedQuiz,
           questionid: newVideo.questionId,
           quizid: selectedQuiz,
-          question_text: selectedQuestion.question_text,
-          core_topic: selectedQuestion.question_text.substring(0, 50),
+          question_text: cleanQuestionText,
+          core_topic: selectedQuestion.core_topic || 'N/A',
           video_data: {
             title: newVideo.title || 'Custom Video',
             link: newVideo.url,
