@@ -597,6 +597,7 @@ const InstructorView = ({ baseUrl, courseId }) => {
         setCourseQuestions((prevQuestions) => [...prevQuestions, newVideoData]);
         setNewVideo({ title: '', url: '', questionId: '' });
         console.log('Video added successfully:', newVideoData);
+        fetchCourseVideos(fetchCurrentCourseId());
       }
     } catch (error) {
       console.log('Error adding video:', error);
