@@ -22,6 +22,42 @@
 4. **Caching and Storing Results**
    - Caches dynamically generated core topics and videos, reducing the need for repeated API calls or queries.
 
+
+# Chrome Extension Setup Guide
+
+Follow these steps to set up and run the Chrome extension locally on your machine.
+---
+### 1. Download & Clone
+Clone the repository using Git to keep track of source files:
+
+git clone <repository-url>
+cd knowgap-extension
+
+### 2. Install Dependencies
+Run npm to install required packages:
+npm install
+
+### 3. Environment Configuration
+Create a `.env` file in the root directory (where package.json lives) and add the local backend URL:
+BACKEND_URL=http://localhost:5001
+
+### 4. Build the Extension
+Build the extension from the `src/` folder:
+* Single production build:
+  npm run build
+* Automatically re-build on save:
+  npm start
+  
+### 5. Load in Chrome (Dev Mode)
+1. Open Chrome and go to `chrome://extensions/`
+2. Turn on **Developer mode** (top-right toggle).
+3. Click **Load unpacked**.
+4. Select the generated `build/` folder.
+
+### 6. Refreshing Changes
+* `npm start` automatically updates the `build/` folder whenever you edit files in `src/`.
+* **Important:** After a build updates, click the **Refresh (↻)** icon on the extension card in `chrome://extensions/` to see your changes live in the browser.
+
 Current Student View          |  Current Instructor View
 :-------------------------:|:-------------------------:
 ![](https://i.ibb.co/592pv8d/image-2024-10-26-204812751.png)| ![](https://i.ibb.co/hRjdT0R/demo.png)
